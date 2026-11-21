@@ -976,7 +976,7 @@ namespace GHelper
                 Top = Program.settingsForm.Top;
             }
 
-            Left = Program.settingsForm.Left - Width - 5;
+            Left = Helpers.TaskbarPosition.ChildLeft(this);
             InitServices();
         }
 

@@ -178,7 +178,7 @@ namespace GHelper
         {
             Height = Program.settingsForm.Height;
             Top = Program.settingsForm.Top;
-            Left = Program.settingsForm.Left - Width - 5;
+            Left = Helpers.TaskbarPosition.ChildLeft(this);
             AlignLabelUpdates();
             LoadUpdates(true);
         }

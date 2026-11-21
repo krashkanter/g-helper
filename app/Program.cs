@@ -78,6 +78,8 @@ namespace GHelper
             Logger.WriteLine("----------------------");
             Logger.WriteLine("App launched: " + AppConfig.GetModel() + " :" + Assembly.GetExecutingAssembly().GetName().Version.ToString() + CultureInfo.CurrentUICulture + (ProcessHelper.IsUserAdministrator() ? "." : ""));
 
+            TaskbarPosition.Init();
+
             settingsForm = new SettingsForm();
             modeControl = new ModeControl();
             gpuControl = new GPUModeControl(settingsForm);
@@ -414,12 +416,6 @@ namespace GHelper
             SchedulePowerCheck();
         }
 
-        public static bool IsTaskbarTop()
-        {
-            var rect = new Helpers.RECT();
-            return User32.GetWindowRect(Helpers.NativeMethods.FindWindow("Shell_TrayWnd", null), ref rect) && rect.top <= 0 && rect.right - rect.left > rect.bottom - rect.top;
-        }
-
         public static void SettingsToggle(bool checkForFocus = true, bool trayClick = false)
         {
             if (settingsForm.Visible)
@@ -443,18 +439,19 @@ namespace GHelper
                 settingsForm.WindowState = FormWindowState.Normal;
 
                 settingsForm.Location = screen.WorkingArea.Location;
-                settingsForm.Left = screen.WorkingArea.Right - 10 - settingsForm.Width;
-                settingsForm.Top = IsTaskbarTop() ? screen.WorkingArea.Top + 10 : screen.WorkingArea.Bottom - 10 - settingsForm.Height;
+                settingsForm.Location = TaskbarPosition.MainWindowLocation(screen, settingsForm.Size);
 
                 settingsForm.Show();
                 settingsForm.ShowAll();
 
-                settingsForm.Left = screen.WorkingArea.Right - 10 - settingsForm.Width;
+                // Size can change once shown (DPI scaling), so place it again
+                var location = TaskbarPosition.MainWindowLocation(screen, settingsForm.Size);
+                settingsForm.Left = location.X;
 
                 if (AppConfig.IsAlly())
                     settingsForm.Top = Math.Max(10, screen.Bounds.Height - 110 - settingsForm.Height);
                 else
-                    settingsForm.Top = IsTaskbarTop() ? screen.WorkingArea.Top + 10 : screen.WorkingArea.Bottom - 10 - settingsForm.Height;
+                    settingsForm.Top = location.Y;
 
                 settingsForm.VisualiseGPUMode();
             }

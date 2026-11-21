@@ -679,9 +679,7 @@ namespace GHelper
                 return;
             }
 
-            var screen = Screen.FromControl(this);
-            Left = screen.WorkingArea.Right - 10 - Width;
-            Top = Program.IsTaskbarTop() ? screen.WorkingArea.Top + 10 : screen.WorkingArea.Bottom - 10 - Height;
+            Location = TaskbarPosition.MainWindowLocation(Screen.FromControl(this), Size);
         }
 
         private void PanelBattery_MouseEnter(object? sender, EventArgs e)

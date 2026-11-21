@@ -187,7 +187,7 @@ namespace GHelper
                 Top = Program.settingsForm.Top;
             }
 
-            Left = Program.settingsForm.Left - Width - 5;
+            Left = Helpers.TaskbarPosition.ChildLeft(this);
 
             headset.Disconnect += Headset_Disconnect;
             headset.BatteryUpdated += Headset_BatteryUpdated;

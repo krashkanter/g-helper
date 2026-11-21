@@ -90,7 +90,7 @@ namespace GHelper
         public void FormPosition()
         {
             Top = Program.settingsForm.Top;
-            Left = Program.settingsForm.Left - Width - 5;
+            Left = Helpers.TaskbarPosition.ChildLeft(this);
         }
 
         private string AlphaText() => Math.Round(trackAlpha.Value * 100.0 / 255) + "%";
