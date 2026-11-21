@@ -1,0 +1,109 @@
+name: Sync upstream release
+
+# Rebuilds every new stable release of seerge/g-helper with this fork's changes and publishes it here
+# as <upstream tag>-krashkanter. "This fork's changes" = everything under app/ on main that differs from
+# upstream main. If the changes don't apply or the build fails, the run fails and G-Helper shows
+# "Update failed" instead of offering the new version (see app/AutoUpdate/AutoUpdateControl.cs).
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream release tag to build (default is the latest stable release)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream-release
+
+env:
+  UPSTREAM: seerge/g-helper
+  SUFFIX: krashkanter
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.release.outputs.build }}
+      tag: ${{ steps.release.outputs.tag }}
+      fork_tag: ${{ steps.release.outputs.fork_tag }}
+    steps:
+    - name: Find upstream stable release
+      id: release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_TAG: ${{ inputs.tag }}
+      run: |
+        tag="${INPUT_TAG:-$(gh release view --repo "$UPSTREAM" --json tagName --jq .tagName)}"
+        [[ "$tag" =~ ^v[0-9]+(\.[0-9]+)+$ ]] || { echo "Unexpected upstream tag: '$tag'"; exit 1; }
+        fork_tag="$tag-$SUFFIX"
+
+        if gh release view "$fork_tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then build=false; else build=true; fi
+        echo "Upstream stable: $tag, fork release $fork_tag needs building: $build"
+
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        echo "fork_tag=$fork_tag" >> "$GITHUB_OUTPUT"
+        echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+      FORK_TAG: ${{ needs.check.outputs.fork_tag }}
+    steps:
+    - name: Keep line endings as committed
+      run: git config --global core.autocrlf false
+
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Apply fork changes to upstream release
+      run: |
+        git fetch --no-tags "https://github.com/$env:UPSTREAM.git" "+refs/heads/main:refs/upstream/main" "+refs/tags/${env:TAG}:refs/upstream/release"
+        if ($LASTEXITCODE) { throw "Could not fetch upstream $env:TAG" }
+
+        $base = git merge-base HEAD refs/upstream/main
+        if ($LASTEXITCODE) { throw "main has no common history with upstream main" }
+
+        $patch = Join-Path $env:RUNNER_TEMP fork.patch
+        git diff --binary --output=$patch $base HEAD -- app
+        Write-Host "Fork changes (upstream $base..$env:GITHUB_SHA):"
+        git diff --stat $base HEAD -- app
+
+        git checkout --quiet --detach refs/upstream/release
+        git apply --3way $patch
+        if ($LASTEXITCODE) {
+          git status --short
+          throw "Fork changes do not apply to upstream $env:TAG. Resolve the conflicts on main, then re-run this workflow."
+        }
+
+    - name: Setup dotnet
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Build
+      run: dotnet publish app/GHelper.sln --configuration Release --runtime win-x64 -p:PublishSingleFile=true --no-self-contained
+
+    - name: Package
+      run: |
+        New-Item -ItemType Directory dist | Out-Null
+        Copy-Item app/bin/x64/Release/net10.0-windows/win-x64/publish/GHelper.exe dist/
+        Compress-Archive dist/GHelper.exe dist/GHelper.zip
+
+    - name: Publish release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $notes = "G-Helper $env:TAG ([upstream release](https://github.com/$env:UPSTREAM/releases/tag/$env:TAG)) with this fork's changes from $env:GITHUB_SHA.`n`nThis build is not code-signed, so Windows SmartScreen may warn on first run."
+        gh release create $env:FORK_TAG dist/GHelper.exe dist/GHelper.zip --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "G-Helper $env:TAG (krashkanter)" --notes $notes --latest
