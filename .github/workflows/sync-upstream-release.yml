@@ -44,6 +44,15 @@ jobs:
         fork_tag="$tag-$SUFFIX"
 
         if gh release view "$fork_tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then build=false; else build=true; fi
+
+        # The fork's changes are made against upstream main, so a release cut before that point can't take them
+        if [[ "$build" == true ]]; then
+          base=$(gh api "repos/$UPSTREAM/compare/main...$GITHUB_REPOSITORY_OWNER:main" --jq .merge_base_commit.sha)
+          if [[ "$(gh api "repos/$UPSTREAM/compare/$base...$tag" --jq .status)" == behind ]]; then
+            echo "$tag is older than upstream $base, which this fork's changes are based on. Waiting for the next stable release."
+            build=false
+          fi
+        fi
         echo "Upstream stable: $tag, fork release $fork_tag needs building: $build"
 
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
