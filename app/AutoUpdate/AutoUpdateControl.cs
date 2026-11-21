@@ -1,5 +1,6 @@
 ﻿using GHelper.Helpers;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Text.Json;
@@ -12,7 +13,16 @@ namespace GHelper.AutoUpdate
 
         SettingsForm settings;
 
-        public string versionUrl = "https://github.com/seerge/g-helper/releases";
+        // This fork publishes its own patched build of every upstream stable release
+        // (.github/workflows/sync-upstream-release.yml), so updates come from the fork
+        const string ForkRepo = "krashkanter/g-helper";
+        const string UpstreamRepo = "seerge/g-helper";
+        const string SyncWorkflow = "sync-upstream-release.yml";
+
+        // How long a new upstream release may go without a patched build before it counts as failed
+        static readonly TimeSpan BuildGracePeriod = TimeSpan.FromHours(6);
+
+        public string versionUrl = $"https://github.com/{ForkRepo}/releases";
         public bool update = false;
 
         static long lastUpdate;
@@ -74,9 +84,18 @@ namespace GHelper.AutoUpdate
                 using (var httpClient = new HttpClient())
                 {
                     httpClient.DefaultRequestHeaders.Add("User-Agent", "G-Helper App");
-                    var json = await httpClient.GetStringAsync("https://api.github.com/repos/seerge/g-helper/releases/latest");
-                    var config = JsonSerializer.Deserialize<JsonElement>(json);
-                    var tag = config.GetProperty("tag_name").ToString().Replace("v", "");
+                    var appVersion = new Version(Assembly.GetExecutingAssembly().GetName().Version.ToString());
+
+                    var release = await GetLatestRelease(httpClient, ForkRepo);
+                    if (release is null)
+                    {
+                        await CheckForkBuild(httpClient, appVersion);
+                        return;
+                    }
+
+                    var config = release.Value;
+                    var gitVersion = ParseTagVersion(config);
+                    var tag = gitVersion.ToString();
                     var assets = config.GetProperty("assets");
 
                     string url = null;
@@ -89,10 +108,6 @@ namespace GHelper.AutoUpdate
 
                     if (url is null)
                         url = assets[0].GetProperty("browser_download_url").ToString();
-
-                    var gitVersion = new Version(tag);
-                    var appVersion = new Version(Assembly.GetExecutingAssembly().GetName().Version.ToString());
-                    //appVersion = new Version("0.50.0.0"); 
 
                     if (gitVersion.CompareTo(appVersion) > 0)
                     {
@@ -119,7 +134,7 @@ namespace GHelper.AutoUpdate
                     }
                     else
                     {
-                        Logger.WriteLine($"Latest version {appVersion}");
+                        await CheckForkBuild(httpClient, appVersion);
                     }
 
                 }
@@ -129,6 +144,56 @@ namespace GHelper.AutoUpdate
                 Logger.WriteLine("Failed to check for updates:" + ex.Message);
             }
 
+        }
+
+        // Upstream has a newer stable release than this app, but the fork has not published a patched build of it:
+        // the sync workflow failed (or never ran), so show "Update failed" instead of offering the update
+        async Task CheckForkBuild(HttpClient httpClient, Version appVersion)
+        {
+            var upstream = await GetLatestRelease(httpClient, UpstreamRepo);
+            var upstreamVersion = upstream is null ? null : ParseTagVersion(upstream.Value);
+
+            if (upstreamVersion is null || upstreamVersion.CompareTo(appVersion) <= 0)
+            {
+                Logger.WriteLine($"Latest version {appVersion}");
+                return;
+            }
+
+            var published = upstream.Value.GetProperty("published_at").GetDateTimeOffset();
+            bool overdue = DateTimeOffset.UtcNow - published > BuildGracePeriod;
+
+            if (!overdue && !await LastSyncRunFailed(httpClient))
+            {
+                Logger.WriteLine($"Upstream {upstreamVersion} released, patched build pending");
+                return;
+            }
+
+            Logger.WriteLine($"Update failed: no patched build of upstream {upstreamVersion}");
+            update = false;
+            versionUrl = $"https://github.com/{ForkRepo}/actions/workflows/{SyncWorkflow}";
+            settings.SetVersionLabel($"Update failed: {appVersion.Major}.{appVersion.Minor}.{appVersion.Build} → {upstreamVersion}", true);
+        }
+
+        static async Task<bool> LastSyncRunFailed(HttpClient httpClient)
+        {
+            var json = await httpClient.GetStringAsync($"https://api.github.com/repos/{ForkRepo}/actions/workflows/{SyncWorkflow}/runs?status=completed&per_page=1");
+            var runs = JsonSerializer.Deserialize<JsonElement>(json).GetProperty("workflow_runs");
+            return runs.GetArrayLength() > 0 && runs[0].GetProperty("conclusion").GetString() != "success";
+        }
+
+        static async Task<JsonElement?> GetLatestRelease(HttpClient httpClient, string repo)
+        {
+            using var response = await httpClient.GetAsync($"https://api.github.com/repos/{repo}/releases/latest");
+            if (response.StatusCode == HttpStatusCode.NotFound) return null; // no stable release yet
+            response.EnsureSuccessStatusCode();
+            return JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+        }
+
+        // Fork tags carry a suffix (v0.291-krashkanter), so take only the numeric part
+        static Version ParseTagVersion(JsonElement release)
+        {
+            var match = Regex.Match(release.GetProperty("tag_name").GetString() ?? "", @"\d+(\.\d+)+");
+            return match.Success ? new Version(match.Value) : new Version(0, 0);
         }
 
         public static string EscapeString(string input)
